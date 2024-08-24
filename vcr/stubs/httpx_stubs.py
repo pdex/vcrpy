@@ -183,7 +183,7 @@ def _sync_vcr_send(cassette, real_send, *args, **kwargs):
 
     real_response = real_send(*args, **kwargs)
     if is_async():
-        asyncio.get_running_loop().run_until_complete(
+        asyncio.get_running_loop().create_task(
             _record_responses(cassette, vcr_request, real_response, aread=False)
         )
     else:
