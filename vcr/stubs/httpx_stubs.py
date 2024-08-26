@@ -174,6 +174,41 @@ def is_async():
         return False
 
 
+def _sync_to_serialized_response(resp):
+    # The content shouldn't already have been read in by HTTPX.
+    assert not hasattr(resp, "_decoder")
+
+    # Retrieve the content, but without decoding it.
+    with patch.dict(resp.headers, {"Content-Encoding": ""}):
+        resp.read()
+
+    result = {
+        "status": {"code": resp.status_code, "message": resp.reason_phrase},
+        "headers": _transform_headers(resp),
+        "body": {"string": resp.content},
+    }
+
+    # As the content wasn't decoded, we restore the response to a state which
+    # will be capable of decoding the content for the consumer.
+    del resp._decoder
+    resp._content = resp._get_content_decoder().decode(resp.content)
+    return result
+
+
+def _sync_record_responses(cassette, vcr_request, real_response):
+    for past_real_response in real_response.history:
+        past_vcr_request = _make_vcr_request(past_real_response.request)
+        cassette.append(past_vcr_request, _sync_to_serialized_response(past_real_response))
+
+    if real_response.history:
+        # If there was a redirection keep we want the request which will hold the
+        # final redirect value
+        vcr_request = _make_vcr_request(real_response.request)
+
+    cassette.append(vcr_request, _sync_to_serialized_response(real_response))
+    return real_response
+
+
 def _sync_vcr_send(cassette, real_send, *args, **kwargs):
     vcr_request, response = _shared_vcr_send(cassette, real_send, *args, **kwargs)
     if response:
@@ -182,12 +217,7 @@ def _sync_vcr_send(cassette, real_send, *args, **kwargs):
         return response
 
     real_response = real_send(*args, **kwargs)
-    if is_async():
-        asyncio.get_running_loop().create_task(
-            _record_responses(cassette, vcr_request, real_response, aread=False)
-        )
-    else:
-        asyncio.run(_record_responses(cassette, vcr_request, real_response, aread=False))
+    _sync_record_responses(cassette, vcr_request, real_response)
     return real_response
 
 
